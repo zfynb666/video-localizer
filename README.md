@@ -48,6 +48,20 @@ video-localizer/
 
 ## 本地运行
 
+也可以使用图形界面版本。安装依赖后运行：
+
+```powershell
+python src/app.py
+```
+
+打包 Windows EXE：
+
+```powershell
+.\build_exe.ps1
+```
+
+生成的文件位于 `dist/VideoLocalizer.exe`。首次运行仍需要本地配置翻译 API，模型文件也会在首次识别时下载。
+
 建议使用 Python 3.12：
 
 ```powershell

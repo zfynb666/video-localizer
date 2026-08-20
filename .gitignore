@@ -25,3 +25,6 @@ cache/
 .idea/
 .vscode/
 *.log
+build/
+dist/
+*.spec
