@@ -1,68 +1,34 @@
 # Video Localizer
 
-一个用于学习和作品集展示的视频汉化工具。
+An open-source Windows desktop tool that turns an English video into a new video with burned-in Simplified Chinese subtitles.
 
-当前目标：自动识别视频中的语音，并转换为指定语言的字幕文件。
-
-本项目只负责视频字幕的识别与翻译，不生成封面、标题、简介、缩略图或其他发布素材。
-
-## MVP 功能
-
-- 从视频中提取音频
-- 使用 Whisper 自动识别视频中的语音语言
-- 使用 AI API 翻译为指定目标语言
-- 输出带时间轴的 `.srt` 字幕
-
-## 技术栈
-
-- Python
-- Whisper / faster-whisper
-- FFmpeg
-- OpenAI-compatible API
-
-## 项目结构
+## What It Does
 
 ```text
-video-localizer/
-├─ src/              # 源代码
-├─ examples/         # 示例输入和输出说明
-├─ screenshots/      # 运行截图
-├─ README.md
-├─ requirements.txt
-└─ .gitignore
+video.mp4 -> faster-whisper timestamps -> batched AI translation -> FFmpeg -> video_zh-subbed.mp4
 ```
 
-## 使用流程
+Each translated subtitle keeps the time range of its source cue. Translation requests use numbered JSON entries, and the response is validated before FFmpeg renders the result.
 
-```text
-输入视频
-    ↓
-提取音频
-    ↓
-语音识别
-    ↓
-翻译为指定语言
-    ↓
-输出 SRT 字幕
-```
+## Features
 
-## 本地运行
+- Windows GUI: choose an input video and output MP4
+- `faster-whisper` speech recognition with timestamps
+- English-to-Simplified-Chinese translation through an OpenAI-compatible API
+- Batched translation with JSON id validation and retries
+- FFmpeg hard-subtitle rendering with H.264 video and copied audio
+- Command-line entry point for automation
 
-也可以使用图形界面版本。安装依赖后运行：
+This repository contains only the core video-localization workflow. It does not include the separate publishing-materials generator, personal API credentials, model caches, or media files.
 
-```powershell
-python src/app.py
-```
+## Requirements
 
-打包 Windows EXE：
+- Python 3.11 or 3.12
+- FFmpeg in `PATH` (or the `imageio-ffmpeg` fallback dependency)
+- Internet access on first run to download a Whisper model
+- An OpenAI-compatible chat completion endpoint and API key
 
-```powershell
-.\build_exe.ps1
-```
-
-生成的文件位于 `dist/VideoLocalizer.exe`。首次运行仍需要本地配置翻译 API，模型文件也会在首次识别时下载。
-
-建议使用 Python 3.12：
+## Install
 
 ```powershell
 py -3.12 -m venv .venv
@@ -70,33 +36,42 @@ py -3.12 -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-设置本地环境变量后运行：
+Copy `.env.example` to `.env` and fill in local values. Never commit `.env` or a real API key.
 
-```powershell
-$env:OPENAI_API_KEY = "你的 API Key"
-$env:OPENAI_BASE_URL = "你的 OpenAI-compatible Base URL"
-$env:OPENAI_MODEL = "你的翻译模型"
-python src/localize_video.py input/example.mp4 -o output/example.zh.srt
+```dotenv
+OPENAI_API_KEY=your-key
+OPENAI_BASE_URL=https://your-compatible-endpoint/v1
+OPENAI_TRANSLATION_MODEL=your-model
 ```
 
-只做英文识别、不调用翻译 API：
+## Run The GUI
 
 ```powershell
-python src/localize_video.py input/example.mp4 -o output/example.en.srt --no-translate
+python src/app.py
 ```
 
-## 当前状态
+Choose the input video and an output path ending in `.mp4`, then click **开始翻译**. The original video is not modified.
 
-项目处于 MVP 开发阶段。当前仓库先用于整理代码、记录实验过程和展示项目结构。
+## Run From The Command Line
 
-## 功能边界
+```powershell
+$env:OPENAI_API_KEY = "your-key"
+$env:OPENAI_BASE_URL = "https://your-compatible-endpoint/v1"
+$env:OPENAI_TRANSLATION_MODEL = "your-model"
+python src/localize_video.py input\example.mp4 -o output\example_zh-subbed.mp4
+```
 
-- 输入：视频文件
-- 输出：带时间轴的字幕文件（`.srt`）
-- 不包含：视频封装、配音、封面、标题、简介和其他发布素材生成
+## Build Windows EXE
 
-## 安全说明
+```powershell
+.\build_exe.ps1
+```
 
-- API Key 只能放在本地环境变量或 `.env` 文件中。
-- `.env`、视频文件、音频文件和生成的字幕默认不提交到 Git。
-- 仅处理自己拥有版权或已获授权的视频。
+The executable is generated under `dist\VideoLocalizer.exe`. Runtime configuration remains external.
+
+## Limitations
+
+- The public workflow currently assumes English speech and Simplified Chinese output.
+- Hard subtitles require video re-encoding.
+- Translation quality depends on the Whisper model and API model.
+- Process only videos you own or are authorized to translate and redistribute.

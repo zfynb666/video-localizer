@@ -17,6 +17,10 @@ __pycache__/
 *.srt
 *.ass
 *.vtt
+*.json
+*.jpg
+*.png
+*.zip
 input/
 output/
 cache/
@@ -28,4 +32,6 @@ cache/
 build/
 dist/
 downloads/
+portfolio-build-test/
+portfolio-dist-test/
 *.spec

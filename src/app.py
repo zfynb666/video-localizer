@@ -1,4 +1,4 @@
-"""Small Windows GUI for the subtitle-only video localizer."""
+"""Small Windows GUI for translating a video into a subtitle-burned video."""
 
 from __future__ import annotations
 
@@ -10,66 +10,64 @@ from tkinter import filedialog, messagebox, ttk
 
 from dotenv import load_dotenv
 
-from localize_video import transcribe, translate, write_srt
+from localize_video import localize_video
 
 
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Video Localizer - 字幕翻译")
-        self.geometry("680x570")
-        self.minsize(600, 520)
+        self.title("Video Localizer - 视频字幕翻译")
+        self.geometry("760x570")
+        self.minsize(680, 520)
+        load_dotenv()
         self.video = tk.StringVar()
-        self.output = tk.StringVar(value="")
+        self.output = tk.StringVar()
         self.api_key = tk.StringVar(value=os.environ.get("OPENAI_API_KEY", ""))
         self.base_url = tk.StringVar(value=os.environ.get("OPENAI_BASE_URL", ""))
-        self.model = tk.StringVar(value=os.environ.get("OPENAI_MODEL", ""))
-        self.target_language = tk.StringVar(value="简体中文")
-        self.status = tk.StringVar(value="请选择视频文件")
+        self.model = tk.StringVar(value=os.environ.get("OPENAI_TRANSLATION_MODEL", os.environ.get("OPENAI_MODEL", "")))
+        self.status = tk.StringVar(value="请选择视频")
         self._build_ui()
 
     def _build_ui(self) -> None:
         frame = ttk.Frame(self, padding=18)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="Video Localizer", font=("Segoe UI", 18, "bold")).pack(anchor="w")
-        ttk.Label(frame, text="仅将视频语音识别并翻译为带时间轴的 SRT 字幕").pack(anchor="w", pady=(2, 18))
-        row = ttk.Frame(frame)
-        row.pack(fill="x", pady=5)
-        ttk.Label(row, text="视频文件", width=12).pack(side="left")
-        ttk.Entry(row, textvariable=self.video).pack(side="left", fill="x", expand=True)
-        ttk.Button(row, text="选择", command=self.choose_video).pack(side="left", padx=(8, 0))
-        row = ttk.Frame(frame)
-        row.pack(fill="x", pady=5)
-        ttk.Label(row, text="字幕输出", width=12).pack(side="left")
-        ttk.Entry(row, textvariable=self.output).pack(side="left", fill="x", expand=True)
-        ttk.Button(row, text="选择", command=self.choose_output).pack(side="left", padx=(8, 0))
-        for label, variable, secret in (
-            ("API Key", self.api_key, True),
-            ("API 地址", self.base_url, False),
-            ("翻译模型", self.model, False),
-            ("目标语言", self.target_language, False),
-        ):
-            row = ttk.Frame(frame)
-            row.pack(fill="x", pady=5)
-            ttk.Label(row, text=label, width=12).pack(side="left")
-            ttk.Entry(row, textvariable=variable, show="*" if secret else "").pack(side="left", fill="x", expand=True)
+        ttk.Label(frame, text="输入视频，自动生成带中文字幕的视频").pack(anchor="w", pady=(2, 18))
+        self._path_row(frame, "输入视频", self.video, self.choose_video)
+        self._path_row(frame, "输出视频", self.output, self.choose_output)
+        self._config_row(frame, "API Key", self.api_key, True)
+        self._config_row(frame, "API 地址", self.base_url, False)
+        self._config_row(frame, "翻译模型", self.model, False)
         controls = ttk.Frame(frame)
         controls.pack(fill="x", pady=(16, 8))
         self.start_button = ttk.Button(controls, text="开始翻译", command=self.start)
         self.start_button.pack(side="left")
         ttk.Label(controls, textvariable=self.status).pack(side="left", padx=14)
-        self.log = tk.Text(frame, height=12, state="disabled", wrap="word")
+        self.log = tk.Text(frame, height=13, state="disabled", wrap="word")
         self.log.pack(fill="both", expand=True, pady=(8, 0))
+
+    def _path_row(self, parent, label, variable, command) -> None:
+        row = ttk.Frame(parent)
+        row.pack(fill="x", pady=5)
+        ttk.Label(row, text=label, width=12).pack(side="left")
+        ttk.Entry(row, textvariable=variable).pack(side="left", fill="x", expand=True)
+        ttk.Button(row, text="选择", command=command).pack(side="left", padx=(8, 0))
+
+    def _config_row(self, parent, label, variable, secret) -> None:
+        row = ttk.Frame(parent)
+        row.pack(fill="x", pady=5)
+        ttk.Label(row, text=label, width=12).pack(side="left")
+        ttk.Entry(row, textvariable=variable, show="*" if secret else "").pack(side="left", fill="x", expand=True)
 
     def choose_video(self) -> None:
         path = filedialog.askopenfilename(filetypes=[("Video", "*.mp4 *.mkv *.avi *.mov *.webm"), ("All files", "*.*")])
         if path:
             self.video.set(path)
             if not self.output.get():
-                self.output.set(str(Path(path).with_suffix(".zh.srt")))
+                self.output.set(str(Path(path).with_name(f"{Path(path).stem}_zh-subbed.mp4")))
 
     def choose_output(self) -> None:
-        path = filedialog.asksaveasfilename(defaultextension=".srt", filetypes=[("SRT subtitles", "*.srt")])
+        path = filedialog.asksaveasfilename(defaultextension=".mp4", filetypes=[("MP4 video", "*.mp4")])
         if path:
             self.output.set(path)
 
@@ -80,10 +78,10 @@ class App(tk.Tk):
         self.log.configure(state="disabled")
 
     def start(self) -> None:
-        video = Path(self.video.get())
-        output = Path(self.output.get())
-        if not video.is_file() or output.suffix.lower() != ".srt":
-            messagebox.showerror("输入有误", "请选择有效的视频文件，并设置 .srt 输出文件。")
+        video = Path(self.video.get().strip())
+        output = Path(self.output.get().strip())
+        if not video.is_file() or output.suffix.lower() != ".mp4":
+            messagebox.showerror("输入有误", "请选择有效的视频文件，并设置 .mp4 输出文件。")
             return
         if not self.api_key.get().strip() or not self.model.get().strip():
             messagebox.showerror("缺少配置", "请填写 API Key 和翻译模型。")
@@ -94,19 +92,15 @@ class App(tk.Tk):
 
     def run_job(self, video: Path, output: Path) -> None:
         try:
-            load_dotenv()
             os.environ["OPENAI_API_KEY"] = self.api_key.get().strip()
-            os.environ["OPENAI_MODEL"] = self.model.get().strip()
+            os.environ["OPENAI_TRANSLATION_MODEL"] = self.model.get().strip()
             if self.base_url.get().strip():
                 os.environ["OPENAI_BASE_URL"] = self.base_url.get().strip()
-            self.after(0, self.write_log, "正在进行语音识别...")
-            cues = transcribe(video, "small", "cpu", "int8")
-            self.after(0, self.write_log, f"识别到 {len(cues)} 条字幕，正在翻译...")
-            cues = translate(cues, self.target_language.get().strip() or "简体中文")
-            write_srt(cues, output)
+            self.after(0, self.write_log, "正在识别语音、翻译字幕并生成视频...")
+            localize_video(video, output)
             self.after(0, self.write_log, f"已输出：{output}")
             self.after(0, self.status.set, "完成")
-            self.after(0, lambda: messagebox.showinfo("完成", f"字幕已保存到：\n{output}"))
+            self.after(0, lambda: messagebox.showinfo("完成", f"带中文字幕的视频已保存到：\n{output}"))
         except Exception as exc:
             self.after(0, self.write_log, f"错误：{exc}")
             self.after(0, self.status.set, "失败")
@@ -116,5 +110,4 @@ class App(tk.Tk):
 
 
 if __name__ == "__main__":
-    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     App().mainloop()
