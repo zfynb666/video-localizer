@@ -1,11 +1,23 @@
-.venv/
+# Python
 __pycache__/
-*.pyc
+*.py[codz]
+*.so
+.Python
+*.egg-info/
+.eggs/
+wheels/
+
+# Virtual environments and secrets
 .env
 .env.*
 !.env.example
+.envrc
+.venv/
+venv/
+env/
+ENV/
 
-# Media and generated files
+# Media and generated subtitles
 *.mp4
 *.mkv
 *.avi
@@ -25,13 +37,23 @@ input/
 output/
 cache/
 
-# Local tooling and editor files
-.idea/
-.vscode/
-*.log
+# Build, test, and tooling output
 build/
 dist/
 downloads/
 portfolio-build-test/
 portfolio-dist-test/
 *.spec
+*.manifest
+*.log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors and notebooks
+.idea/
+.vscode/
+.ipynb_checkpoints/
+tempCodeRunnerFile.py
