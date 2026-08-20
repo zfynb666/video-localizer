@@ -37,11 +37,11 @@ def transcribe(video: Path, model_name: str, device: str, compute_type: str) -> 
     from faster_whisper import WhisperModel
 
     model = WhisperModel(model_name, device=device, compute_type=compute_type)
-    segments, _info = model.transcribe(str(video), language="en", vad_filter=True)
+    segments, _info = model.transcribe(str(video), vad_filter=True)
     return [Cue(segment.start, segment.end, segment.text) for segment in segments]
 
 
-def translate(cues: list[Cue]) -> list[Cue]:
+def translate(cues: list[Cue], target_language: str = "Simplified Chinese") -> list[Cue]:
     from openai import OpenAI
 
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -64,7 +64,7 @@ def translate(cues: list[Cue]) -> list[Cue]:
             messages=[
                 {
                     "role": "system",
-                    "content": "Translate English subtitle text into natural concise Simplified Chinese. Return only the translation.",
+                    "content": f"Translate the subtitle text into natural concise {target_language}. Return only the translation.",
                 },
                 {"role": "user", "content": cue.text.strip()},
             ],
@@ -82,6 +82,7 @@ def main() -> None:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--compute-type", default="int8")
     parser.add_argument("--no-translate", action="store_true")
+    parser.add_argument("--target-language", default="Simplified Chinese")
     args = parser.parse_args()
 
     if not args.video.is_file():
@@ -89,7 +90,7 @@ def main() -> None:
 
     cues = transcribe(args.video, args.model, args.device, args.compute_type)
     if not args.no_translate:
-        cues = translate(cues)
+        cues = translate(cues, args.target_language)
     write_srt(cues, args.output)
     print(f"Wrote {len(cues)} subtitle cues to {args.output}")
 

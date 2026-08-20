@@ -17,10 +17,14 @@ class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Video Localizer - 字幕翻译")
-        self.geometry("680x430")
-        self.minsize(600, 360)
+        self.geometry("680x570")
+        self.minsize(600, 520)
         self.video = tk.StringVar()
         self.output = tk.StringVar(value="")
+        self.api_key = tk.StringVar(value=os.environ.get("OPENAI_API_KEY", ""))
+        self.base_url = tk.StringVar(value=os.environ.get("OPENAI_BASE_URL", ""))
+        self.model = tk.StringVar(value=os.environ.get("OPENAI_MODEL", ""))
+        self.target_language = tk.StringVar(value="简体中文")
         self.status = tk.StringVar(value="请选择视频文件")
         self._build_ui()
 
@@ -39,6 +43,16 @@ class App(tk.Tk):
         ttk.Label(row, text="字幕输出", width=12).pack(side="left")
         ttk.Entry(row, textvariable=self.output).pack(side="left", fill="x", expand=True)
         ttk.Button(row, text="选择", command=self.choose_output).pack(side="left", padx=(8, 0))
+        for label, variable, secret in (
+            ("API Key", self.api_key, True),
+            ("API 地址", self.base_url, False),
+            ("翻译模型", self.model, False),
+            ("目标语言", self.target_language, False),
+        ):
+            row = ttk.Frame(frame)
+            row.pack(fill="x", pady=5)
+            ttk.Label(row, text=label, width=12).pack(side="left")
+            ttk.Entry(row, textvariable=variable, show="*" if secret else "").pack(side="left", fill="x", expand=True)
         controls = ttk.Frame(frame)
         controls.pack(fill="x", pady=(16, 8))
         self.start_button = ttk.Button(controls, text="开始翻译", command=self.start)
@@ -71,6 +85,9 @@ class App(tk.Tk):
         if not video.is_file() or output.suffix.lower() != ".srt":
             messagebox.showerror("输入有误", "请选择有效的视频文件，并设置 .srt 输出文件。")
             return
+        if not self.api_key.get().strip() or not self.model.get().strip():
+            messagebox.showerror("缺少配置", "请填写 API Key 和翻译模型。")
+            return
         self.start_button.configure(state="disabled")
         self.status.set("处理中...")
         threading.Thread(target=self.run_job, args=(video, output), daemon=True).start()
@@ -78,10 +95,14 @@ class App(tk.Tk):
     def run_job(self, video: Path, output: Path) -> None:
         try:
             load_dotenv()
+            os.environ["OPENAI_API_KEY"] = self.api_key.get().strip()
+            os.environ["OPENAI_MODEL"] = self.model.get().strip()
+            if self.base_url.get().strip():
+                os.environ["OPENAI_BASE_URL"] = self.base_url.get().strip()
             self.after(0, self.write_log, "正在进行语音识别...")
             cues = transcribe(video, "small", "cpu", "int8")
             self.after(0, self.write_log, f"识别到 {len(cues)} 条字幕，正在翻译...")
-            cues = translate(cues)
+            cues = translate(cues, self.target_language.get().strip() or "简体中文")
             write_srt(cues, output)
             self.after(0, self.write_log, f"已输出：{output}")
             self.after(0, self.status.set, "完成")
