@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+
+# Media and generated files
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.webm
+*.mp3
+*.wav
+*.m4a
+*.srt
+*.ass
+*.vtt
+input/
+output/
+cache/
+
+# Local tooling and editor files
+.idea/
+.vscode/
+*.log
