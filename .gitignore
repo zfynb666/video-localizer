@@ -43,6 +43,8 @@ dist/
 downloads/
 portfolio-build-test/
 portfolio-dist-test/
+release-build/
+release-package/
 *.spec
 *.manifest
 *.log

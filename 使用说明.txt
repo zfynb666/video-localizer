@@ -1,0 +1,21 @@
+Video Localizer 便携版
+
+使用方法：
+1. 双击 VideoLocalizer.exe。
+2. 在 API Key 中填写你自己的 API Key。
+3. 填写 OpenAI-compatible API 地址，例如：https://your-endpoint/v1。
+4. 填写翻译模型名称。
+5. 选择输入视频和输出视频路径。
+6. 点击“开始翻译”。
+
+程序会自动完成：
+- Whisper 语音识别
+- 保留时间轴
+- AI 翻译为简体中文
+- FFmpeg 烧录中文字幕
+
+注意：
+- 本程序不包含 API Key，需要使用者自行填写。
+- 首次处理可能需要下载 Whisper 模型，请保持网络连接。
+- 输出视频会重新编码，原视频不会被修改。
+- 只处理自己拥有版权或已获得授权的视频。
