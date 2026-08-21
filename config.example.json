@@ -1,0 +1,8 @@
+{
+  "base_url": "",
+  "api_key": "",
+  "ai_model": "",
+  "whisper_model": "small",
+  "source_language": "en",
+  "target_language": "zh"
+}

@@ -30,6 +30,7 @@ ENV/
 *.ass
 *.vtt
 *.json
+!config.example.json
 *.jpg
 *.png
 *.zip
@@ -45,6 +46,7 @@ portfolio-build-test/
 portfolio-dist-test/
 release-build/
 release-package/
+release-package-v*/
 *.spec
 *.manifest
 *.log

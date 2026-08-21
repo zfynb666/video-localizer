@@ -4,6 +4,4 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name VideoLocal
     --collect-all faster_whisper `
     --collect-all ctranslate2 `
     --collect-all imageio_ffmpeg `
-    --collect-all openai `
-    --collect-all dotenv `
     src/app.py
