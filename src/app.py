@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from urllib.parse import urlsplit, urlunsplit
 
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
@@ -132,6 +133,17 @@ def save_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def normalize_base_url(value: str) -> str:
+    """Accept either a gateway root or an OpenAI-compatible /v1 base URL."""
+    value = value.strip().rstrip("/")
+    if not value:
+        return ""
+    parts = urlsplit(value)
+    if parts.scheme and parts.netloc and parts.path in ("", "/"):
+        return urlunsplit((parts.scheme, parts.netloc, "/v1", parts.query, parts.fragment))
+    return value
+
+
 class TranslationBatchError(RuntimeError):
     def __init__(self, message: str, partial: dict[int, str] | None = None):
         super().__init__(message)
@@ -141,9 +153,10 @@ class TranslationBatchError(RuntimeError):
 class TranslationServiceError(RuntimeError):
     """A temporary provider/network failure; retry the same request."""
 
-    def __init__(self, message: str, retry_after: int = 60):
+    def __init__(self, message: str, retry_after: int = 60, status_code: int | None = None):
         super().__init__(message)
         self.retry_after = max(1, retry_after)
+        self.status_code = status_code
 
 
 def translate_batch(
@@ -177,7 +190,7 @@ def translate_batch(
     prefix = f"batch-{batch_number:04d}-attempt-{attempt:02d}"
     save_json(artifact_dir / f"{prefix}-input.json", body)
     request = urllib.request.Request(
-        base_url.rstrip("/") + "/chat/completions",
+        normalize_base_url(base_url) + "/chat/completions",
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -206,7 +219,7 @@ def translate_batch(
             except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
                 pass
             raise TranslationServiceError(
-                f"AI 接口暂时不可用（HTTP {exc.code}）：{detail}", retry_after
+                f"AI 接口暂时不可用（HTTP {exc.code}）：{detail}", retry_after, exc.code
             ) from exc
         raise RuntimeError(f"AI 接口返回 HTTP {exc.code}：{detail}") from exc
     except urllib.error.URLError as exc:
@@ -231,12 +244,12 @@ def translate_batch(
         return [by_id[index] for index in range(len(entries))]
     except TranslationBatchError as exc:
         (artifact_dir / f"{prefix}-error.txt").write_text(
-            f"返回格式错误\n{exc}", encoding="utf-8"
+            f"返回格式错误\n{exc}\n原始内容：{content if 'content' in locals() else payload}", encoding="utf-8"
         )
         raise
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         (artifact_dir / f"{prefix}-error.txt").write_text(
-            f"返回格式错误\n{exc}", encoding="utf-8"
+            f"返回格式错误\n{exc}\n原始内容：{content if 'content' in locals() else payload}", encoding="utf-8"
         )
         raise RuntimeError(f"AI 返回格式不正确：{exc}") from exc
 
@@ -263,6 +276,19 @@ def translate_batch_with_retries(
             )
         except TranslationServiceError as exc:
             last_error = exc
+            if exc.status_code in (503, 524) and len(entries) > 1 and depth < 4:
+                midpoint = max(1, len(entries) // 2)
+                left = translate_batch_with_retries(
+                    entries[:midpoint], base_url, api_key, model, source_name,
+                    target_name, artifact_dir, batch_number * 100 + 1,
+                    max_attempts, depth + 1, on_retry,
+                )
+                right = translate_batch_with_retries(
+                    entries[midpoint:], base_url, api_key, model, source_name,
+                    target_name, artifact_dir, batch_number * 100 + 2,
+                    max_attempts, depth + 1, on_retry,
+                )
+                return left + right
             if attempt < max_attempts:
                 delay = min(180, exc.retry_after * attempt)
                 for remaining in range(delay, 0, -1):
@@ -313,23 +339,10 @@ def translate_batch_with_retries(
             ) from exc
         except Exception as exc:
             last_error = exc
-            if len(entries) > 1:
-                midpoint = len(entries) // 2
-                left = translate_batch_with_retries(
-                    entries[:midpoint], base_url, api_key, model, source_name,
-                    target_name, artifact_dir, batch_number * 100 + 1,
-                    max_attempts, depth + 1, on_retry,
-                )
-                right = translate_batch_with_retries(
-                    entries[midpoint:], base_url, api_key, model, source_name,
-                    target_name, artifact_dir, batch_number * 100 + 2,
-                    max_attempts, depth + 1, on_retry,
-                )
-                return left + right
             if attempt < max_attempts:
                 continue
             raise RuntimeError(
-                f"第 {batch_number} 批连续 {max_attempts} 次返回校验失败：{exc}。"
+                f"第 {batch_number} 批连续 {max_attempts} 次请求或返回失败：{exc}。"
                 f"现场文件已保存到：{artifact_dir}"
             ) from exc
     raise RuntimeError(str(last_error))
@@ -582,7 +595,7 @@ class SubtitleApp:
                 self.events.put(("progress", "跳过翻译", 70, f"源语言和目标语言都是 {target_name}，直接使用转写文本"))
             else:
                 translated = []
-                batch_size = 100
+                batch_size = 25
                 translation_dir = job_dir / "translation_batches"
                 total_batches = (len(entries) + batch_size - 1) // batch_size
                 self.events.put(("log", f"翻译批次：每批 {batch_size} 条，共 {total_batches} 批；每批最多重试 3 次"))
