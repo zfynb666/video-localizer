@@ -23,7 +23,7 @@ This repository contains only the core video-localization workflow. It does not 
 
 ## Download The Portable Windows Build
 
-For users who only want to run the application, download `VideoLocalizer-v1.0.0-win64.zip` from the repository's GitHub Releases page. Extract it and double-click `VideoLocalizer.exe`; Python and FFmpeg do not need to be installed separately.
+For users who only want to run the application, download `VideoLocalizer-v1.0.1-win64.zip` from the repository's GitHub Releases page. Extract it and double-click `VideoLocalizer.exe`; Python and FFmpeg do not need to be installed separately.
 
 The portable build still requires the user to enter their own API Key, API URL, and model. The Whisper model is downloaded on first use and is not included in the release archive.
 
