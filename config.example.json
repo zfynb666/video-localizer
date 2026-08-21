@@ -4,5 +4,7 @@
   "ai_model": "",
   "whisper_model": "small",
   "source_language": "en",
-  "target_language": "zh"
+  "target_language": "zh",
+  "translation_batch_size": "50",
+  "translation_concurrency": "3"
 }

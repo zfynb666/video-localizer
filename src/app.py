@@ -13,6 +13,7 @@ import time
 import tkinter as tk
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from urllib.parse import urlsplit, urlunsplit
@@ -55,6 +56,8 @@ DEFAULT_CONFIG = {
     "whisper_model": "small",
     "source_language": "en",
     "target_language": "zh",
+    "translation_batch_size": "50",
+    "translation_concurrency": "3",
 }
 FFMPEG_TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
 
@@ -73,6 +76,14 @@ def load_config() -> dict[str, str]:
 
 def save_config(config: dict[str, str]) -> None:
     CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def config_choice(config: dict[str, str], key: str, allowed: set[int], default: int) -> int:
+    try:
+        value = int(config.get(key, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if value in allowed else default
 
 
 def get_ffmpeg() -> Path:
@@ -509,6 +520,8 @@ class SubtitleApp:
         self.whisper_var = tk.StringVar(value=MODEL_LABELS.get(config["whisper_model"], MODEL_LABELS["small"]))
         self.source_var = tk.StringVar(value=LANGUAGE_LABELS.get(config["source_language"], LANGUAGE_LABELS["en"]))
         self.target_var = tk.StringVar(value=TARGET_LANGUAGE_LABELS.get(config["target_language"], TARGET_LANGUAGE_LABELS["zh"]))
+        self.batch_size_var = tk.StringVar(value=config["translation_batch_size"])
+        self.concurrency_var = tk.StringVar(value=config["translation_concurrency"])
         self.detail_var = tk.StringVar(value="请选择一个视频")
         self.progress_var = tk.DoubleVar(value=0)
         self.stage_var = tk.StringVar(value="准备")
@@ -544,6 +557,12 @@ class SubtitleApp:
         ttk.Label(settings, text="目标语言").grid(row=0, column=4, sticky="w")
         self.target_box = ttk.Combobox(settings, textvariable=self.target_var, values=list(TARGET_LANGUAGE_LABELS.values()), state="readonly", width=12)
         self.target_box.grid(row=0, column=5, sticky="w", padx=(6, 0))
+        ttk.Label(settings, text="每批条数").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        self.batch_size_box = ttk.Combobox(settings, textvariable=self.batch_size_var, values=["25", "50", "75", "100"], state="readonly", width=8)
+        self.batch_size_box.grid(row=1, column=1, sticky="w", padx=(8, 20), pady=(8, 0))
+        ttk.Label(settings, text="并发请求").grid(row=1, column=2, sticky="w", pady=(8, 0))
+        self.concurrency_box = ttk.Combobox(settings, textvariable=self.concurrency_var, values=["1", "2", "3", "4", "5"], state="readonly", width=8)
+        self.concurrency_box.grid(row=1, column=3, sticky="w", padx=(6, 12), pady=(8, 0))
 
         api = ttk.LabelFrame(outer, text="AI 接口设置", padding=10)
         api.pack(fill="x")
@@ -590,6 +609,8 @@ class SubtitleApp:
         return next((code for code, text in LANGUAGE_LABELS.items() if text == value), default)
 
     def current_config(self) -> dict[str, str]:
+        batch_size = self.batch_size_var.get().strip()
+        concurrency = self.concurrency_var.get().strip()
         return {
             "base_url": self.base_url_var.get().strip(),
             "api_key": self.api_key_var.get().strip(),
@@ -597,6 +618,8 @@ class SubtitleApp:
             "whisper_model": self.selected_model(),
             "source_language": self.selected_language(self.source_var.get(), "en"),
             "target_language": self.selected_language(self.target_var.get(), "zh"),
+            "translation_batch_size": batch_size if batch_size in {"25", "50", "75", "100"} else "50",
+            "translation_concurrency": concurrency if concurrency in {"1", "2", "3", "4", "5"} else "3",
         }
 
     def save_settings(self, silent: bool = False) -> None:
@@ -753,46 +776,83 @@ class SubtitleApp:
                 translated = [entry["text"] for entry in entries]
                 self.events.put(("progress", "跳过翻译", 70, f"源语言和目标语言都是 {target_name}，直接使用转写文本"))
             else:
-                translated = []
-                batch_size = 25
+                translated_slots: list[str | None] = [None] * len(entries)
+                batch_size = config_choice(config, "translation_batch_size", {25, 50, 75, 100}, 50)
+                concurrency = config_choice(config, "translation_concurrency", {1, 2, 3, 4, 5}, 3)
                 translation_dir = job_dir / "translation_batches"
-                total_batches = (len(entries) + batch_size - 1) // batch_size
-                self.events.put(("log", f"翻译批次：每批 {batch_size} 条，共 {total_batches} 批；每批最多重试 3 次"))
+                batches = [
+                    (start // batch_size + 1, start, entries[start:start + batch_size])
+                    for start in range(0, len(entries), batch_size)
+                ]
+                total_batches = len(batches)
+                completed_count = 0
+                pending_batches: list[tuple[int, int, list[dict]]] = []
+                self.events.put(("log", f"翻译批次：每批 {batch_size} 条，共 {total_batches} 批；并发 {concurrency}；每批最多重试 3 次"))
+
+                def write_partial() -> None:
+                    contiguous = 0
+                    for text in translated_slots:
+                        if text is None:
+                            break
+                        contiguous += 1
+                    if contiguous:
+                        completed_entries = [
+                            {**entry, "text": translated_slots[index]}
+                            for index, entry in enumerate(entries[:contiguous])
+                        ]
+                        write_srt(partial_srt, completed_entries)
 
                 def show_retry(batch_id, attempt, max_attempts, remaining, error):
                     if self.cancel_requested:
                         raise RuntimeError("任务已取消")
+                    translated_done = sum(1 for text in translated_slots if text is not None)
                     self.events.put((
                         "progress",
                         "AI 接口暂时不可用",
-                        25 + start / len(entries) * 45,
+                        25 + translated_done / len(entries) * 45,
                         f"批次 {batch_id} 第 {attempt}/{max_attempts} 次失败，{remaining} 秒后重试",
                     ))
                     if remaining == 1:
                         self.events.put(("log", f"接口暂时不可用，等待后重试同一批次：{error}"))
 
-                for start in range(0, len(entries), batch_size):
+                for batch_number, start, batch in batches:
                     if self.cancel_requested:
                         raise RuntimeError("任务已取消")
-                    batch = entries[start:start + batch_size]
-                    batch_number = start // batch_size + 1
                     restored = load_batch_checkpoint(translation_dir, batch_number, batch, config)
                     if restored is not None:
-                        translated.extend(restored)
-                        self.events.put(("progress", "继续上次任务", 25 + (start + len(batch)) / len(entries) * 45, f"已复用第 {batch_number}/{total_batches} 批"))
+                        translated_slots[start:start + len(batch)] = restored
+                        completed_count += len(batch)
+                        self.events.put(("progress", "继续上次任务", 25 + completed_count / len(entries) * 45, f"已复用第 {batch_number}/{total_batches} 批"))
                         self.events.put(("log", f"第 {batch_number} 批已有有效记录，跳过 AI 请求"))
                     else:
-                        self.events.put(("progress", "正在翻译字幕", 25 + start / len(entries) * 45, f"AI 正在翻译 {source_name} -> {target_name}：第 {start + 1}-{start + len(batch)} 条，共 {len(entries)} 条；批次 {batch_number}/{total_batches}"))
-                        result = translate_batch_with_retries(
-                            batch, config["base_url"], config["api_key"], config["ai_model"],
-                            source_name, target_name, translation_dir, batch_number,
-                            on_retry=show_retry,
-                        )
+                        pending_batches.append((batch_number, start, batch))
+                write_partial()
+
+                def translate_one(item: tuple[int, int, list[dict]]) -> tuple[int, int, list[dict], list[str]]:
+                    batch_number, start, batch = item
+                    if self.cancel_requested:
+                        raise RuntimeError("任务已取消")
+                    self.events.put(("progress", "正在翻译字幕", 25 + completed_count / len(entries) * 45, f"AI 正在翻译 {source_name} -> {target_name}：第 {start + 1}-{start + len(batch)} 条，共 {len(entries)} 条；批次 {batch_number}/{total_batches}"))
+                    result = translate_batch_with_retries(
+                        batch, config["base_url"], config["api_key"], config["ai_model"],
+                        source_name, target_name, translation_dir, batch_number,
+                        on_retry=show_retry,
+                    )
+                    return batch_number, start, batch, result
+
+                with ThreadPoolExecutor(max_workers=concurrency) as executor:
+                    futures = [executor.submit(translate_one, item) for item in pending_batches]
+                    for future in as_completed(futures):
+                        if self.cancel_requested:
+                            raise RuntimeError("任务已取消")
+                        batch_number, start, batch, result = future.result()
                         save_batch_checkpoint(translation_dir, batch_number, batch, config, result)
-                        translated.extend(result)
+                        translated_slots[start:start + len(batch)] = result
+                        completed_count += len(batch)
                         self.events.put(("log", f"第 {batch_number} 批翻译并保存检查点：{translation_dir}"))
-                    completed_entries = [{**entry, "text": translated[index]} for index, entry in enumerate(entries[:len(translated)])]
-                    write_srt(partial_srt, completed_entries)
+                        self.events.put(("progress", "正在翻译字幕", 25 + completed_count / len(entries) * 45, f"已完成 {completed_count}/{len(entries)} 条；批次 {batch_number}/{total_batches}"))
+                        write_partial()
+                translated = [text for text in translated_slots if text is not None]
             chinese_entries = [{**entry, "text": translated[index]} for index, entry in enumerate(entries)]
             write_srt(chinese_srt, chinese_entries)
             if partial_srt.exists():

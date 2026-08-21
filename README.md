@@ -17,7 +17,8 @@ Each translated subtitle keeps the time range of its source cue. Translation req
 - Selectable source and target languages; matching languages skip AI translation
 - Separate OpenAI-compatible Base URL, API Key, and AI translation model settings
 - Saved local configuration, real-time progress, logs, and cancellation
-- Batched translation with JSON id validation, missing-entry recovery, and retries
+- Configurable batched translation with bounded parallel requests
+- JSON id validation, missing-entry recovery, and retries for failed batches
 - Automatic resume from saved source subtitles and validated translation batch checkpoints
 - FFmpeg hard-subtitle rendering with H.264 video and copied audio
 
@@ -56,7 +57,7 @@ Choose an input video and output directory, select the Whisper model and languag
 
 If a run is interrupted, selecting the same video with the same processing settings resumes from local records under `data/jobs`. Completed Whisper transcription and validated translation batches are not requested again.
 
-`Whisper 模型` controls speech recognition speed and accuracy. `AI 接口设置 -> 模型` is the AI model used to translate the subtitle text.
+`Whisper 模型` controls speech recognition speed and accuracy. `AI 接口设置 -> 模型` is the AI model used to translate the subtitle text. `每批条数` defaults to `50`, and `并发请求` defaults to `3`; reduce concurrency if your provider returns rate-limit or temporary-unavailable errors.
 
 ## Build Windows EXE
 
