@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -121,6 +122,20 @@ def write_srt(path: Path, entries: list[dict]) -> None:
             handle.write(f"{index}\n{entry['start']} --> {entry['end']}\n{entry['text'].strip()}\n\n")
 
 
+def read_srt(path: Path) -> list[dict]:
+    entries: list[dict] = []
+    content = path.read_text(encoding="utf-8-sig")
+    for block in re.split(r"\r?\n\s*\r?\n", content.strip()):
+        lines = block.splitlines()
+        if len(lines) < 3 or " --> " not in lines[1]:
+            continue
+        start, end = lines[1].split(" --> ", 1)
+        text = "\n".join(lines[2:]).strip()
+        if text:
+            entries.append({"start": start.strip(), "end": end.strip(), "text": text})
+    return entries
+
+
 def strip_json_fence(value: str) -> str:
     value = value.strip()
     if value.startswith("```"):
@@ -131,6 +146,111 @@ def strip_json_fence(value: str) -> str:
 
 def save_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def save_json_atomic(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    save_json(temporary, value)
+    temporary.replace(path)
+
+
+def source_fingerprint(video: Path) -> dict[str, object]:
+    stat = video.stat()
+    return {"name": video.name, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def batch_source_hash(entries: list[dict]) -> str:
+    source = [{"id": index, "text": entry["text"]} for index, entry in enumerate(entries)]
+    encoded = json.dumps(source, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def translation_identity(config: dict[str, str]) -> dict[str, str]:
+    return {
+        "source_language": config["source_language"],
+        "target_language": config["target_language"],
+        "ai_model": config["ai_model"],
+    }
+
+
+def load_json_object(path: Path) -> dict | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def save_batch_checkpoint(
+    translation_dir: Path,
+    batch_number: int,
+    entries: list[dict],
+    config: dict[str, str],
+    translations: list[str],
+) -> None:
+    save_json_atomic(
+        translation_dir / f"checkpoint-batch-{batch_number:04d}.json",
+        {
+            "version": 1,
+            "source_hash": batch_source_hash(entries),
+            "translation": translation_identity(config),
+            "translations": translations,
+        },
+    )
+
+
+def load_batch_checkpoint(
+    translation_dir: Path,
+    batch_number: int,
+    entries: list[dict],
+    config: dict[str, str],
+) -> list[str] | None:
+    expected_hash = batch_source_hash(entries)
+    expected_identity = translation_identity(config)
+    checkpoint = translation_dir / f"checkpoint-batch-{batch_number:04d}.json"
+    saved = load_json_object(checkpoint)
+    if saved is not None:
+        translations = saved.get("translations")
+        if (
+            saved.get("source_hash") == expected_hash
+            and saved.get("translation") == expected_identity
+            and isinstance(translations, list)
+            and len(translations) == len(entries)
+            and all(isinstance(text, str) and text.strip() for text in translations)
+        ):
+            return [text.strip() for text in translations]
+
+    # Older releases saved request and parsed response files but no checkpoint.
+    expected_texts = [entry["text"] for entry in entries]
+    parsed_paths = list(translation_dir.glob(f"batch-{batch_number:04d}-attempt-*-parsed.json"))
+    parsed_paths.extend(translation_dir.glob("batch-*-attempt-*-parsed.json"))
+    for parsed_path in sorted(set(parsed_paths), reverse=True):
+        input_path = parsed_path.with_name(parsed_path.name.replace("-parsed.json", "-input.json"))
+        request = load_json_object(input_path)
+        parsed = load_json_object(parsed_path)
+        try:
+            request_model = str(request["model"])
+            source = json.loads(request["messages"][1]["content"])
+            items = parsed["translations"]
+            by_id = {int(item["id"]): str(item["text"]).strip() for item in items}
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if request_model != config["ai_model"] or not isinstance(source, list):
+            continue
+        source_texts = [str(item.get("text", "")) for item in source if isinstance(item, dict)]
+        if len(source_texts) != len(source):
+            continue
+        for offset in range(0, len(source_texts) - len(expected_texts) + 1):
+            if source_texts[offset:offset + len(expected_texts)] != expected_texts:
+                continue
+            source_ids = [int(source[index]["id"]) for index in range(offset, offset + len(entries))]
+            if not all(source_id in by_id for source_id in source_ids):
+                continue
+            translations = [by_id[source_id] for source_id in source_ids]
+            save_batch_checkpoint(translation_dir, batch_number, entries, config, translations)
+            return translations
+    return None
 
 
 def normalize_base_url(value: str) -> str:
@@ -549,48 +669,87 @@ class SubtitleApp:
 
     def run_pipeline(self, video: Path, output_dir: Path, config: dict[str, str]) -> None:
         try:
-            from faster_whisper import WhisperModel
-
             ffmpeg = get_ffmpeg()
             self.duration = probe_duration(video, ffmpeg)
             job_dir = DATA_DIR / "jobs" / video.stem
             job_dir.mkdir(parents=True, exist_ok=True)
             english_srt = job_dir / f"{video.stem}.en.srt"
             chinese_srt = job_dir / f"{video.stem}.zh.srt"
+            partial_srt = job_dir / f"{video.stem}.partial.srt"
+            state_path = job_dir / "job-state.json"
             self.events.put(("log", f"输入：{video}"))
             self.events.put(("log", f"视频时长：{self.duration:.1f} 秒"))
-            model_status = "已检测到本地模型" if model_is_cached(config["whisper_model"]) else "本地没有该模型，首次使用需要联网下载"
-            self.events.put(("progress", "正在加载 Whisper 模型", 1, f"模型：{config['whisper_model']}；{model_status}"))
-            MODEL_DIR.mkdir(parents=True, exist_ok=True)
-            model = WhisperModel(
-                config["whisper_model"],
-                device="cpu",
-                compute_type="int8",
-                download_root=str(MODEL_DIR),
-            )
-            if self.cancel_requested:
-                raise RuntimeError("任务已取消")
-
             source_code = config["source_language"]
             target_code = config["target_language"]
-            language_arg = None if source_code == "auto" else source_code
             source_name = LANGUAGE_LABELS.get(source_code, source_code)
             target_name = LANGUAGE_LABELS.get(target_code, target_code)
-            self.events.put(("progress", "正在提取字幕", 3, f"Whisper 正在识别 {source_name} 音频..."))
-            segments, info = model.transcribe(str(video), language=language_arg, vad_filter=True, beam_size=5)
-            entries: list[dict] = []
-            for segment in segments:
+            fingerprint = source_fingerprint(video)
+            state = load_json_object(state_path) or {}
+            transcription_matches = (
+                state.get("source") == fingerprint
+                and state.get("whisper_model") == config["whisper_model"]
+                and state.get("source_language") == source_code
+            )
+            entries = read_srt(english_srt) if english_srt.exists() else []
+            if entries and (transcription_matches or not state):
+                self.events.put(("progress", "继续上次任务", 25, f"发现已有源字幕，共 {len(entries)} 条，跳过 Whisper"))
+                self.events.put(("log", f"复用已有源字幕：{english_srt}"))
+            else:
+                from faster_whisper import WhisperModel
+
+                model_status = "已检测到本地模型" if model_is_cached(config["whisper_model"]) else "本地没有该模型，首次使用需要联网下载"
+                self.events.put(("progress", "正在加载 Whisper 模型", 1, f"模型：{config['whisper_model']}；{model_status}"))
+                MODEL_DIR.mkdir(parents=True, exist_ok=True)
+                model = WhisperModel(
+                    config["whisper_model"],
+                    device="cpu",
+                    compute_type="int8",
+                    download_root=str(MODEL_DIR),
+                )
                 if self.cancel_requested:
                     raise RuntimeError("任务已取消")
-                entries.append({"start": srt_time(segment.start), "end": srt_time(segment.end), "text": segment.text.strip()})
-                progress = 3 + min(segment.end / self.duration, 1) * 22
-                self.events.put(("progress", "正在提取字幕", progress, f"已识别到 {segment.end:.1f} / {self.duration:.1f} 秒"))
-            if not entries:
-                raise RuntimeError("视频中没有识别到英文语音")
-            write_srt(english_srt, entries)
-            self.events.put(("log", f"英文字幕：{english_srt}"))
 
-            if source_code == target_code:
+                language_arg = None if source_code == "auto" else source_code
+                self.events.put(("progress", "正在提取字幕", 3, f"Whisper 正在识别 {source_name} 音频..."))
+                segments, info = model.transcribe(str(video), language=language_arg, vad_filter=True, beam_size=5)
+                entries = []
+                for segment in segments:
+                    if self.cancel_requested:
+                        raise RuntimeError("任务已取消")
+                    entries.append({"start": srt_time(segment.start), "end": srt_time(segment.end), "text": segment.text.strip()})
+                    progress = 3 + min(segment.end / self.duration, 1) * 22
+                    self.events.put(("progress", "正在提取字幕", progress, f"已识别到 {segment.end:.1f} / {self.duration:.1f} 秒"))
+                if not entries:
+                    raise RuntimeError("视频中没有识别到语音")
+                write_srt(english_srt, entries)
+                self.events.put(("log", f"源字幕：{english_srt}"))
+
+            state.update({
+                "version": 1,
+                "source": fingerprint,
+                "whisper_model": config["whisper_model"],
+                "source_language": source_code,
+                "entry_count": len(entries),
+            })
+            save_json_atomic(state_path, state)
+
+            saved_target_entries = read_srt(chinese_srt) if chinese_srt.exists() else []
+            completed_translation_matches = (
+                state.get("source") == fingerprint
+                and state.get("translation") == translation_identity(config)
+                and state.get("translation_source_hash") == batch_source_hash(entries)
+                and state.get("translation_complete") is True
+                and len(saved_target_entries) == len(entries)
+                and all(
+                    saved["start"] == source["start"] and saved["end"] == source["end"]
+                    for saved, source in zip(saved_target_entries, entries)
+                )
+            )
+            if source_code != target_code and completed_translation_matches:
+                translated = [entry["text"] for entry in saved_target_entries]
+                self.events.put(("progress", "继续上次任务", 70, f"发现完整目标字幕，共 {len(entries)} 条，跳过 AI 翻译"))
+                self.events.put(("log", f"复用已有目标字幕：{chinese_srt}"))
+            elif source_code == target_code:
                 translated = [entry["text"] for entry in entries]
                 self.events.put(("progress", "跳过翻译", 70, f"源语言和目标语言都是 {target_name}，直接使用转写文本"))
             else:
@@ -617,15 +776,31 @@ class SubtitleApp:
                         raise RuntimeError("任务已取消")
                     batch = entries[start:start + batch_size]
                     batch_number = start // batch_size + 1
-                    self.events.put(("progress", "正在翻译字幕", 25 + start / len(entries) * 45, f"AI 正在翻译 {source_name} -> {target_name}：第 {start + 1}-{start + len(batch)} 条，共 {len(entries)} 条；批次 {batch_number}/{total_batches}"))
-                    translated.extend(translate_batch_with_retries(
-                        batch, config["base_url"], config["api_key"], config["ai_model"],
-                        source_name, target_name, translation_dir, batch_number,
-                        on_retry=show_retry,
-                    ))
-                    self.events.put(("log", f"第 {batch_number} 批翻译并校验通过，现场文件：{translation_dir}"))
+                    restored = load_batch_checkpoint(translation_dir, batch_number, batch, config)
+                    if restored is not None:
+                        translated.extend(restored)
+                        self.events.put(("progress", "继续上次任务", 25 + (start + len(batch)) / len(entries) * 45, f"已复用第 {batch_number}/{total_batches} 批"))
+                        self.events.put(("log", f"第 {batch_number} 批已有有效记录，跳过 AI 请求"))
+                    else:
+                        self.events.put(("progress", "正在翻译字幕", 25 + start / len(entries) * 45, f"AI 正在翻译 {source_name} -> {target_name}：第 {start + 1}-{start + len(batch)} 条，共 {len(entries)} 条；批次 {batch_number}/{total_batches}"))
+                        result = translate_batch_with_retries(
+                            batch, config["base_url"], config["api_key"], config["ai_model"],
+                            source_name, target_name, translation_dir, batch_number,
+                            on_retry=show_retry,
+                        )
+                        save_batch_checkpoint(translation_dir, batch_number, batch, config, result)
+                        translated.extend(result)
+                        self.events.put(("log", f"第 {batch_number} 批翻译并保存检查点：{translation_dir}"))
+                    completed_entries = [{**entry, "text": translated[index]} for index, entry in enumerate(entries[:len(translated)])]
+                    write_srt(partial_srt, completed_entries)
             chinese_entries = [{**entry, "text": translated[index]} for index, entry in enumerate(entries)]
             write_srt(chinese_srt, chinese_entries)
+            if partial_srt.exists():
+                partial_srt.unlink()
+            state["translation"] = translation_identity(config)
+            state["translation_source_hash"] = batch_source_hash(entries)
+            state["translation_complete"] = True
+            save_json_atomic(state_path, state)
             self.events.put(("progress", "正在翻译字幕", 70, f"已完成 {len(entries)} 条字幕翻译"))
             self.events.put(("log", f"中文字幕：{chinese_srt}"))
 

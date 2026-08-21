@@ -18,6 +18,7 @@ Each translated subtitle keeps the time range of its source cue. Translation req
 - Separate OpenAI-compatible Base URL, API Key, and AI translation model settings
 - Saved local configuration, real-time progress, logs, and cancellation
 - Batched translation with JSON id validation, missing-entry recovery, and retries
+- Automatic resume from saved source subtitles and validated translation batch checkpoints
 - FFmpeg hard-subtitle rendering with H.264 video and copied audio
 
 This repository contains only the core video-localization workflow. It does not include the separate publishing-materials generator, personal API credentials, model caches, or media files.
@@ -52,6 +53,8 @@ python src/app.py
 ```
 
 Choose an input video and output directory, select the Whisper model and languages, fill in the AI interface settings, then click **开始处理**. The original video is not modified.
+
+If a run is interrupted, selecting the same video with the same processing settings resumes from local records under `data/jobs`. Completed Whisper transcription and validated translation batches are not requested again.
 
 `Whisper 模型` controls speech recognition speed and accuracy. `AI 接口设置 -> 模型` is the AI model used to translate the subtitle text.
 
